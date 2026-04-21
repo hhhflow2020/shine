@@ -29,7 +29,7 @@ RUN conan profile detect --force \
 
 # Copy only recipe first for dependency layer caching.
 COPY conanfile.py CMakeLists.txt ./
-COPY cmake ./cmake
+# COPY cmake ./cmake
 RUN conan install . --build=missing -s build_type=Release \
     -c tools.system.package_manager:mode=install \
     -c tools.system.package_manager:sudo=False
