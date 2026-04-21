@@ -1,0 +1,70 @@
+# -------- build output --------
+/build/
+/dist/
+/out/
+/cmake-build-*/
+
+# -------- cmake / conan generated --------
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+CMakeUserPresets.json
+conan_*.cmake
+conanbuild*
+conanrun*
+*.cmake.in
+Testing/
+
+# -------- object/binary --------
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.pdb
+*.exp
+*.ilk
+
+# -------- compile artifacts --------
+*.gcda
+*.gcno
+*.gcov
+.vs/
+*.ninja_log
+*.ninja_deps
+
+# -------- editors / IDEs --------
+.idea/
+.vscode/
+.clangd/
+.cache/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# -------- python venv / caches --------
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# -------- logs / scratch --------
+*.log
+*.tmp
+/tmp/
+
+# -------- conan local --------
+.conan2/
+conan_provider.cmake
+
+# -------- Claude / session scratch --------
+/.claude/

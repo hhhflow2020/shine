@@ -1,0 +1,52 @@
+log:
+  level: info
+  format: text
+
+server:
+  io_threads: 0
+  graceful_timeout: 30s
+
+metrics:
+  listen: 0.0.0.0:9100
+  path: /metrics
+
+inbounds:
+  - tag: s5-local
+    protocol: socks5
+    listen: 127.0.0.1:1080
+  - tag: http-local
+    protocol: http-connect
+    listen: 127.0.0.1:1081
+  - tag: shine-in
+    protocol: shine
+    listen: 0.0.0.0:7011
+    password: "s3cret"
+    max_payload: 512MB
+    ping_interval: 15s
+    pong_timeout: 10s
+    init_window: 256KB
+
+outbounds:
+  - tag: direct
+    protocol: direct
+  - tag: deny
+    protocol: block
+  - tag: us-shine
+    protocol: shine-client
+    server: 127.0.0.1:7011
+    password: "s3cret"
+    pool_size: 2
+    ping_interval: 15s
+    init_window: 256KB
+
+route:
+  rules:
+    - inbound: shine-in
+      outbound: direct
+    - domain_suffix: [".ads.example", "tracking.example"]
+      outbound: deny
+    - domain_suffix: [".cn", ".local"]
+      outbound: direct
+    - cidr: [127.0.0.0/8, ::1/128, 10.0.0.0/8, 192.168.0.0/16]
+      outbound: direct
+  default: us-shine

@@ -1,0 +1,7 @@
+build/
+.cache/
+.conan2/
+.vscode/
+.idea/
+CMakeUserPresets.json
+*.log

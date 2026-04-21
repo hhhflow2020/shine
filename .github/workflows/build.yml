@@ -1,0 +1,167 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runs-on: ubuntu-24.04
+            arch: x86_64
+          - name: linux-arm64
+            runs-on: ubuntu-24.04-arm
+            arch: aarch64
+          - name: macos-arm64
+            runs-on: macos-14
+            arch: arm64
+          - name: macos-amd64
+            runs-on: macos-13
+            arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3-pip python3-venv
+
+      - name: Install system deps (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Conan
+        run: pip install "conan>=2.2,<3"
+
+      - name: Cache Conan
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: conan-${{ matrix.name }}-${{ hashFiles('conanfile.py') }}
+          restore-keys: |
+            conan-${{ matrix.name }}-
+
+      - name: Conan profile
+        run: |
+          conan profile detect --force
+          PROFILE="$(conan config home)/profiles/default"
+          sed -i.bak 's/^compiler.cppstd=.*/compiler.cppstd=20/' "$PROFILE"
+
+      - name: Conan install
+        run: conan install . --build=missing -s build_type=Release
+
+      - name: CMake configure
+        run: cmake --preset conan-release
+
+      - name: CMake build
+        run: cmake --build --preset conan-release -j
+
+      - name: Tests
+        run: ctest --preset conan-release --output-on-failure
+
+      - name: Stage artifact
+        run: |
+          mkdir -p dist/shine-${{ matrix.name }}
+          cp build/Release/shine dist/shine-${{ matrix.name }}/
+          cp configs/example.yaml dist/shine-${{ matrix.name }}/
+          cp README.md dist/shine-${{ matrix.name }}/ 2>/dev/null || true
+          (cd dist && tar -czf shine-${{ matrix.name }}.tar.gz shine-${{ matrix.name }})
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shine-${{ matrix.name }}
+          path: dist/shine-${{ matrix.name }}.tar.gz
+          retention-days: 14
+
+  docker:
+    name: docker-multiarch
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Build (and push on non-PR)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: github-release
+    needs: [native, docker]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: shine-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/shine-*.tar.gz
+          generate_release_notes: true
