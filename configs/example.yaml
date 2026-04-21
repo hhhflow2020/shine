@@ -11,12 +11,12 @@ metrics:
   path: /metrics
 
 inbounds:
-  - tag: s5-local
-    protocol: socks5
-    listen: 127.0.0.1:1080
-  - tag: http-local
-    protocol: http-connect
-    listen: 127.0.0.1:1081
+  # - tag: s5-local
+  #   protocol: socks5
+  #   listen: 127.0.0.1:1080
+  # - tag: http-local
+  #   protocol: http-connect
+  #   listen: 127.0.0.1:1081
   - tag: shine-in
     protocol: shine
     listen: 0.0.0.0:7011
@@ -31,13 +31,13 @@ outbounds:
     protocol: direct
   - tag: deny
     protocol: block
-  - tag: us-shine
-    protocol: shine-client
-    server: 127.0.0.1:7011
-    password: "s3cret"
-    pool_size: 2
-    ping_interval: 15s
-    init_window: 256KB
+  # - tag: us-shine
+  #   protocol: shine-client
+  #   server: 127.0.0.1:7011
+  #   password: "s3cret"
+  #   pool_size: 2
+  #   ping_interval: 15s
+  #   init_window: 256KB
 
 route:
   rules:
@@ -48,5 +48,5 @@ route:
     - domain_suffix: [".cn", ".local"]
       outbound: direct
     - cidr: [127.0.0.0/8, ::1/128, 10.0.0.0/8, 192.168.0.0/16]
-      outbound: direct
-  default: us-shine
+      outbound: block
+  default: direct

@@ -55,12 +55,12 @@ RUN useradd --system --create-home --shell /usr/sbin/nologin shine
 WORKDIR /app
 
 COPY --from=build /src/build/Release/shine /usr/local/bin/shine
-COPY --from=build /src/configs/example.yaml /app/example.yaml
+# COPY --from=build /src/configs/example.yaml /app/example.yaml
 
 USER shine
 
 # SOCKS5(1080), HTTP-CONNECT(1081), shine(7011), metrics(9100)
-EXPOSE 1080 1081 7011 9100
+# EXPOSE 1080 1081 7011 9100
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/shine"]
-CMD ["-c", "/app/example.yaml"]
+CMD ["-c", "/app/shine.yaml"]
