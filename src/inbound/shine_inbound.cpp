@@ -43,6 +43,7 @@ void ShineInbound::stop() {
     stopping_.store(true, std::memory_order_release);
     boost::system::error_code ec;
     acceptor_.close(ec);
+    absl::MutexLock lock(&links_mu_);
     for (auto& l : links_) l->closeNow();
     links_.clear();
 }
@@ -77,7 +78,15 @@ awaitable<void> ShineInbound::acceptLoop() {
             if (on_req) co_await on_req(std::move(req));
             co_return;
         });
-        links_.push_back(std::move(link));
+        {
+            absl::MutexLock lock(&links_mu_);
+            // Remove closed links to prevent unbounded growth.
+            links_.erase(
+                std::remove_if(links_.begin(), links_.end(),
+                    [](const LinkPtr& l) { return !l || l->isClosed(); }),
+                links_.end());
+            links_.push_back(std::move(link));
+        }
     }
 }
 

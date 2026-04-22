@@ -4,6 +4,8 @@
 #include "inbound/inbound.hpp"
 #include "transport/link.hpp"
 
+#include <absl/synchronization/mutex.h>
+
 #include <atomic>
 #include <memory>
 
@@ -29,6 +31,7 @@ private:
     SessionRequestHandler on_req_;
     std::atomic<bool>     stopping_{false};
     std::vector<LinkPtr>  links_;
+    absl::Mutex           links_mu_;
 };
 
 } // namespace shine

@@ -109,6 +109,7 @@ private:
     std::atomic<u64> last_ping_sent_ns_{0};
 
     std::mt19937_64 rng_;
+    absl::Mutex     rng_mu_;
 
     friend class Session;
 };

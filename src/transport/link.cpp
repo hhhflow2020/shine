@@ -201,11 +201,12 @@ awaitable<void> Link::readerLoop() {
             continue;
         }
         auto frame = proto::decodeShineFrame(rf);
-        read_buf_.consume(*sc);
         if (!frame.ok()) {
+            read_buf_.consume(*sc);
             co_await failLink(frame.status().message()); co_return;
         }
         co_await dispatchFrame(std::move(*frame));
+        read_buf_.consume(*sc);
     }
 }
 
@@ -249,7 +250,11 @@ awaitable<void> Link::heartbeatLoop() {
         }
         // Idle long enough → send ping.
         if (pending == 0 && now - last_pong > ping_ns) {
-            u64 nonce = rng_();
+            u64 nonce;
+            {
+                absl::MutexLock lock(&rng_mu_);
+                nonce = rng_();
+            }
             if (nonce == 0) nonce = 1;
             pending_ping_nonce_.store(nonce, std::memory_order_relaxed);
             last_ping_sent_ns_.store(now, std::memory_order_relaxed);
@@ -307,7 +312,10 @@ awaitable<void> Link::dispatchFrame(proto::ShineFrame frame) {
     }
     if (std::holds_alternative<proto::CloseFrame>(frame)) {
         auto& f = std::get<proto::CloseFrame>(frame);
-        if (auto s = findSession(f.sid)) s->onPeerClose();
+        if (auto s = findSession(f.sid)) {
+            s->onPeerClose();
+            if (s->state() == Session::State::Closed) eraseSession(f.sid);
+        }
         co_return;
     }
     if (std::holds_alternative<proto::ResetFrame>(frame)) {
@@ -352,7 +360,10 @@ awaitable<StatusOr<SessionPtr>> Link::openSession(Address target) {
         co_return absl::UnavailableError("link closed");
     }
     u64 sid;
-    do { sid = rng_(); } while (sid == 0);
+    {
+        absl::MutexLock lock(&rng_mu_);
+        do { sid = rng_(); } while (sid == 0);
+    }
     auto self = shared_from_this();
     auto s    = std::make_shared<Session>(self, sid, target, opts_.init_window, opts_.init_window);
     {
@@ -410,8 +421,15 @@ void Link::markClosed() {
 }
 
 void Link::closeNow() {
-    if (handshake_signal_) handshake_signal_->close();
-    markClosed();
+    if (closed_.exchange(true, std::memory_order_acq_rel)) return;
+    // Post to strand to avoid concurrent socket access from reader/writer.
+    asio::post(strand_, [self = shared_from_this()]() {
+        boost::system::error_code ec;
+        self->sock_.shutdown(tcp::socket::shutdown_both, ec);
+        self->sock_.close(ec);
+        if (self->write_chan_) self->write_chan_->close();
+        if (self->handshake_signal_) self->handshake_signal_->close();
+    });
 }
 
 awaitable<bool> Link::waitHandshake() {

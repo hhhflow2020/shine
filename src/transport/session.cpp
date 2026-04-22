@@ -101,6 +101,7 @@ awaitable<void> Session::shutdownWrite() {
     if (!state_.compare_exchange_strong(expected, State::HalfClosedLocal)) {
         if (expected == State::HalfClosedRemote) {
             state_.store(State::Closed, std::memory_order_release);
+            link->eraseSession(sid_);
         } else {
             co_return;
         }
@@ -114,6 +115,7 @@ void Session::close() {
     state_.store(State::Closed, std::memory_order_release);
     if (inbox_) inbox_->close();
     if (credit_signal_) credit_signal_->close();
+    if (auto lk = link_.lock()) lk->eraseSession(sid_);
 }
 
 awaitable<void> Session::onData(std::shared_ptr<std::string> payload) {

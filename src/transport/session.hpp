@@ -49,6 +49,7 @@ public:
     void onReset();       // RESET: both sides dead
 
     u64            sid()     const noexcept { return sid_; }
+    State          state()   const noexcept { return state_.load(std::memory_order_acquire); }
     const Address& target()  const noexcept { return target_; }
     std::atomic<u64>& bytesIn()  noexcept { return bytes_in_; }
     std::atomic<u64>& bytesOut() noexcept { return bytes_out_; }
