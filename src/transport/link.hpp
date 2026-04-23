@@ -8,7 +8,7 @@
 #include "transport/session.hpp"
 
 #include <absl/container/flat_hash_map.h>
-#include <boost/asio/experimental/channel.hpp>
+#include <boost/asio/experimental/concurrent_channel.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -47,7 +47,7 @@ public:
     void start(NewSessionHandler on_new_session);
 
     // Locally open a new session (client-side), returning the Session.
-    awaitable<StatusOr<SessionPtr>> openSession(Address target);
+    awaitable<StatusOr<SessionPtr>> openSession(Address target, bool is_udp = false);
 
     // Wait until handshake_done_ or the link is closed.
     awaitable<bool> waitHandshake();
@@ -90,7 +90,7 @@ private:
     ReadBuffer         read_buf_;
 
     // Writer queue: string of RESP2 frame bytes.
-    using WriteChan = asio::experimental::channel<void(boost::system::error_code, std::string)>;
+    using WriteChan = asio::experimental::concurrent_channel<void(boost::system::error_code, std::string)>;
     std::unique_ptr<WriteChan> write_chan_;
 
     absl::flat_hash_map<u64, SessionPtr> sessions_;
@@ -98,7 +98,7 @@ private:
 
     std::atomic<bool> closed_{false};
     std::atomic<bool> handshake_done_{false};
-    using HandshakeSignal = asio::experimental::channel<void(boost::system::error_code)>;
+    using HandshakeSignal = asio::experimental::concurrent_channel<void(boost::system::error_code)>;
     std::unique_ptr<HandshakeSignal> handshake_signal_;
 
     NewSessionHandler on_new_session_;

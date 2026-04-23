@@ -47,10 +47,14 @@ struct RuleConfig {
     std::vector<std::string>   domain_exact;
     std::vector<std::string>   domain_suffix;
     std::vector<std::string>   cidrs;
+    std::vector<std::string>   geoip;
+    std::vector<std::string>   geosite;
     std::string                outbound_tag;
 };
 
 struct RouteConfig {
+    std::string             geoip_path;
+    std::string             geosite_path;
     std::vector<RuleConfig> rules;
     std::string             default_outbound;
 };

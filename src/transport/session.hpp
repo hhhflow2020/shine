@@ -4,10 +4,11 @@
 #include "core/common.hpp"
 #include "transport/address.hpp"
 #include "transport/session_stream.hpp"
+#include "transport/session_request.hpp"
 
 #include <absl/synchronization/mutex.h>
 
-#include <boost/asio/experimental/channel.hpp>
+#include <boost/asio/experimental/concurrent_channel.hpp>
 
 #include <atomic>
 #include <cstddef>
@@ -22,6 +23,7 @@ class Link;
 // upper layer (outbound handlers) treats it as a transparent bytestream.
 class Session final
     : public ISessionStream,
+      public IDatagramStream,
       public std::enable_shared_from_this<Session> {
 public:
     using Strand = asio::strand<asio::any_io_executor>;
@@ -32,7 +34,8 @@ public:
     static constexpr u32 kDefaultInitWindow = 256u * 1024u;
 
     Session(std::shared_ptr<Link> link, u64 sid, Address target,
-            u32 peer_initial_window, u32 our_initial_window);
+            u32 peer_initial_window, u32 our_initial_window,
+            SessionRequest::Protocol protocol = SessionRequest::Protocol::TCP);
     ~Session() override;
 
     // ---- ISessionStream ----
@@ -41,9 +44,14 @@ public:
     awaitable<void>                  shutdownWrite() override;
     void                             close() override;
 
+    // ---- IDatagramStream ----
+    awaitable<Status> sendTo(std::span<const u8> data, class Address target) override;
+    awaitable<StatusOr<std::pair<std::shared_ptr<std::string>, class Address>>> receiveFrom() override;
+
     // ---- invoked by Link reader ----
     // Push payload for this session. Moves into per-session queue.
     awaitable<void> onData(std::shared_ptr<std::string> payload);
+    awaitable<void> onUdpData(std::shared_ptr<std::string> payload, class Address addr);
     void onWindow(u32 delta);
     void onPeerClose();   // CLOSE from peer (half-close remote->us)
     void onReset();       // RESET: both sides dead
@@ -51,6 +59,7 @@ public:
     u64            sid()     const noexcept { return sid_; }
     State          state()   const noexcept { return state_.load(std::memory_order_acquire); }
     const Address& target()  const noexcept { return target_; }
+    SessionRequest::Protocol protocol() const noexcept { return protocol_; }
     std::atomic<u64>& bytesIn()  noexcept { return bytes_in_; }
     std::atomic<u64>& bytesOut() noexcept { return bytes_out_; }
 
@@ -61,6 +70,7 @@ private:
     std::weak_ptr<Link> link_;
     u64                 sid_;
     Address             target_;
+    SessionRequest::Protocol protocol_;
 
     // Flow control.
     u32 our_initial_window_;                 // window we advertised
@@ -71,16 +81,21 @@ private:
     std::atomic<State> state_{State::Init};
 
     // Inbound payload queue (from Link reader -> read()).
-    using PayloadChan = asio::experimental::channel<void(boost::system::error_code,
-                                                         std::shared_ptr<std::string>)>;
+    using PayloadChan = asio::experimental::concurrent_channel<void(boost::system::error_code,
+                                                                    std::shared_ptr<std::string>)>;
     std::unique_ptr<PayloadChan> inbox_;
+
+    // UDP queue
+    using UdpPayloadChan = asio::experimental::concurrent_channel<void(boost::system::error_code,
+                                                                       std::pair<std::shared_ptr<std::string>, Address>)>;
+    std::unique_ptr<UdpPayloadChan> udp_inbox_;
 
     // Leftover bytes from a payload that didn't fit in the last read() buffer.
     std::shared_ptr<std::string> leftover_;
     std::size_t                  leftover_off_ = 0;
 
     // Credit wake-up channel: writer blocks here until WINDOW frames arrive.
-    using CreditChan = asio::experimental::channel<void(boost::system::error_code)>;
+    using CreditChan = asio::experimental::concurrent_channel<void(boost::system::error_code)>;
     std::unique_ptr<CreditChan> credit_signal_;
 
     std::atomic<u64> bytes_in_{0};

@@ -275,28 +275,46 @@ awaitable<void> Link::dispatchFrame(proto::ShineFrame frame) {
         co_await s->onData(std::move(pay));
         co_return;
     }
-    if (std::holds_alternative<proto::NewFrame>(frame)) {
+    if (std::holds_alternative<proto::UdpDataFrame>(frame)) {
+        auto& df = std::get<proto::UdpDataFrame>(frame);
+        auto s = findSession(df.sid);
+        if (!s) co_return;
+        auto addr = Address::parseBinary(df.addr_blob);
+        if (!addr.ok()) co_return;
+        auto pay = std::make_shared<std::string>(std::move(df.payload));
+        co_await s->onUdpData(std::move(pay), *addr);
+        co_return;
+    }
+    if (std::holds_alternative<proto::NewFrame>(frame) || std::holds_alternative<proto::NewUdpFrame>(frame)) {
         if (!on_new_session_) co_return;
-        auto& nf = std::get<proto::NewFrame>(frame);
-        auto addr = Address::parseBinary(nf.addr_blob);
-        if (!addr.ok()) {
-            std::string wire;
-            proto::encodeReset(wire, proto::ResetFrame{nf.sid});
-            co_await enqueueFrame(std::move(wire));
-            co_return;
+        bool is_udp = std::holds_alternative<proto::NewUdpFrame>(frame);
+        u64 sid = is_udp ? std::get<proto::NewUdpFrame>(frame).sid : std::get<proto::NewFrame>(frame).sid;
+        u32 win = is_udp ? 0 : std::get<proto::NewFrame>(frame).init_window;
+        
+        Address target;
+        if (!is_udp) {
+            auto addr = Address::parseBinary(std::get<proto::NewFrame>(frame).addr_blob);
+            if (!addr.ok()) {
+                std::string wire;
+                proto::encodeReset(wire, proto::ResetFrame{sid});
+                co_await enqueueFrame(std::move(wire));
+                co_return;
+            }
+            target = *addr;
         }
+
         auto s = std::make_shared<Session>(
-            shared_from_this(), nf.sid, *addr, nf.init_window, opts_.init_window);
+            shared_from_this(), sid, target, win, opts_.init_window,
+            is_udp ? SessionRequest::Protocol::UDP : SessionRequest::Protocol::TCP);
         {
             absl::MutexLock lock(&sessions_mu_);
-            sessions_.emplace(nf.sid, s);
+            sessions_.emplace(sid, s);
         }
         std::string wire;
-        proto::encodeAck(wire, proto::AckFrame{nf.sid});
+        proto::encodeAck(wire, proto::AckFrame{sid});
         co_await enqueueFrame(std::move(wire));
         // Spawn the handler DETACHED so the reader loop is not blocked for the
         // lifetime of the session.
-        auto target = *addr;
         auto self   = shared_from_this();
         auto handler = on_new_session_;
         asio::co_spawn(strand_,
@@ -355,7 +373,7 @@ awaitable<void> Link::enqueueFrame(std::string frame_bytes) {
                                      asio::redirect_error(use_awaitable, ec));
 }
 
-awaitable<StatusOr<SessionPtr>> Link::openSession(Address target) {
+awaitable<StatusOr<SessionPtr>> Link::openSession(Address target, bool is_udp) {
     if (closed_.load(std::memory_order_acquire)) {
         co_return absl::UnavailableError("link closed");
     }
@@ -365,13 +383,19 @@ awaitable<StatusOr<SessionPtr>> Link::openSession(Address target) {
         do { sid = rng_(); } while (sid == 0);
     }
     auto self = shared_from_this();
-    auto s    = std::make_shared<Session>(self, sid, target, opts_.init_window, opts_.init_window);
+    auto s    = std::make_shared<Session>(
+        self, sid, target, opts_.init_window, opts_.init_window,
+        is_udp ? SessionRequest::Protocol::UDP : SessionRequest::Protocol::TCP);
     {
         absl::MutexLock lock(&sessions_mu_);
         sessions_.emplace(sid, s);
     }
     std::string wire;
-    proto::encodeNew(wire, proto::NewFrame{sid, target.toBinary(), opts_.init_window});
+    if (is_udp) {
+        proto::encodeNewUdp(wire, proto::NewUdpFrame{sid});
+    } else {
+        proto::encodeNew(wire, proto::NewFrame{sid, target.toBinary(), opts_.init_window});
+    }
     co_await enqueueFrame(std::move(wire));
     co_return s;
 }

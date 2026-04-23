@@ -29,6 +29,8 @@ enum class FrameType : u8 {
     Ping    = 10,
     Pong    = 11,
     Data    = 12,
+    NewUdp  = 13,
+    UdpData = 14,
 };
 
 // The wire magic byte that identifies the compact DATA frame inside the
@@ -53,10 +55,13 @@ struct DataFrame {
     const u8*   payload;
     std::size_t size;
 };
+struct NewUdpFrame { u64 sid; };
+struct UdpDataFrame { u64 sid; std::string addr_blob; std::string payload; };
 
 using ShineFrame = std::variant<
     HelloFrame, AuthFrame, OkFrame, ErrFrame, NewFrame, AckFrame,
-    CloseFrame, ResetFrame, WindowFrame, PingFrame, PongFrame, DataFrame>;
+    CloseFrame, ResetFrame, WindowFrame, PingFrame, PongFrame, DataFrame,
+    NewUdpFrame, UdpDataFrame>;
 
 // Decode a parsed RESP2 frame (either Array or Bulk) into a ShineFrame.
 StatusOr<ShineFrame> decodeShineFrame(const Resp2Frame& rf);
@@ -74,6 +79,8 @@ void encodeReset (std::string& out, const ResetFrame&  f);
 void encodeWindow(std::string& out, const WindowFrame& f);
 void encodePing  (std::string& out, const PingFrame&   f);
 void encodePong  (std::string& out, const PongFrame&   f);
+void encodeNewUdp(std::string& out, const NewUdpFrame& f);
+void encodeUdpData(std::string& out, const UdpDataFrame& f);
 
 // DATA: emits the framing only; caller appends body bytes then "\r\n".
 // Returns total bulk length (header bytes written + promised payload).

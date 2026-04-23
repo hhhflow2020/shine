@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pip \
         python3-venv \
         ca-certificates \
+        wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Conan in an isolated venv so we don't fight the system python.
@@ -43,6 +44,11 @@ RUN cmake --preset conan-release \
  && cmake --build --preset conan-release -j "$(nproc)" \
  && ctest --preset conan-release --output-on-failure
 
+# Download Geo files
+RUN mkdir -p /src/build/Release/geo \
+ && wget -O /src/build/Release/geo/geosite.dat "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" \
+ && wget -O /src/build/Release/geo/geoip.dat "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
+
 # ---------- runtime stage ----------
 FROM ubuntu:24.04 AS runtime
 
@@ -55,6 +61,8 @@ RUN useradd --system --create-home --shell /usr/sbin/nologin shine
 WORKDIR /app
 
 COPY --from=build /src/build/Release/shine /usr/local/bin/shine
+COPY --from=build /src/build/Release/geo/geosite.dat /app/geosite.dat
+COPY --from=build /src/build/Release/geo/geoip.dat /app/geoip.dat
 # COPY --from=build /src/configs/example.yaml /app/example.yaml
 
 USER shine

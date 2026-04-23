@@ -67,3 +67,40 @@ TEST(ShineFrame, PingPongRoundtrip) {
     ASSERT_TRUE(std::holds_alternative<PingFrame>(*sf));
     EXPECT_EQ(std::get<PingFrame>(*sf).nonce, 0x1234567890abcdefULL);
 }
+
+TEST(ShineFrame, NewUdpRoundtrip) {
+    std::string wire;
+    NewUdpFrame f;
+    f.sid = 0xabcdef1234567890ULL;
+    encodeNewUdp(wire, f);
+
+    Resp2Parser p;
+    ReadBuffer rb;
+    push(rb, wire);
+    Resp2Frame rf;
+    auto n = p.tryParse(rb, rf); ASSERT_TRUE(n.ok()); EXPECT_GT(*n, 0u);
+    auto sf = decodeShineFrame(rf); ASSERT_TRUE(sf.ok());
+    ASSERT_TRUE(std::holds_alternative<NewUdpFrame>(*sf));
+    EXPECT_EQ(std::get<NewUdpFrame>(*sf).sid, f.sid);
+}
+
+TEST(ShineFrame, UdpDataRoundtrip) {
+    std::string wire;
+    UdpDataFrame f;
+    f.sid = 0x9988776655443322ULL;
+    f.addr_blob = "\x01\x08\x08\x08\x08\x00\x35"; // 8.8.8.8:53
+    f.payload = "dns_query_bytes";
+    encodeUdpData(wire, f);
+
+    Resp2Parser p;
+    ReadBuffer rb;
+    push(rb, wire);
+    Resp2Frame rf;
+    auto n = p.tryParse(rb, rf); ASSERT_TRUE(n.ok()); EXPECT_GT(*n, 0u);
+    auto sf = decodeShineFrame(rf); ASSERT_TRUE(sf.ok());
+    ASSERT_TRUE(std::holds_alternative<UdpDataFrame>(*sf));
+    const auto& d = std::get<UdpDataFrame>(*sf);
+    EXPECT_EQ(d.sid, f.sid);
+    EXPECT_EQ(d.addr_blob, f.addr_blob);
+    EXPECT_EQ(d.payload, f.payload);
+}

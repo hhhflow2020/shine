@@ -12,7 +12,7 @@ Exporter::~Exporter() = default;
 
 Status Exporter::start(const config::MetricsConfig& cfg) {
     try {
-        exposer_ = std::make_unique<prometheus::Exposer>(cfg.listen);
+        exposer_ = std::make_unique<prometheus::Exposer>(cfg.listen, 1);
         exposer_->RegisterCollectable(instance().shared());
         SHINE_INFO("metrics exporter on http://{}{}", cfg.listen, cfg.path);
         return absl::OkStatus();

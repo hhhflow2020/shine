@@ -6,6 +6,7 @@
 #include "transport/tcp_stream.hpp"
 
 #include <boost/asio/connect.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 
 namespace shine {
 
@@ -76,11 +77,43 @@ awaitable<Status> ShineOutbound::handle(SessionRequest req) {
     if (!link) co_return absl::UnavailableError("no live link");
     bool ok = co_await link->waitHandshake();
     if (!ok) co_return absl::UnavailableError("shine link handshake failed");
-    auto s = co_await link->openSession(req.target);
+    bool is_udp = (req.protocol == SessionRequest::Protocol::UDP);
+    auto s = co_await link->openSession(req.target, is_udp);
     if (!s.ok()) co_return s.status();
-    auto remote_stream = std::static_pointer_cast<ISessionStream>(*s);
-    co_await bidiCopy(req.client_stream, remote_stream);
-    co_return absl::OkStatus();
+
+    if (is_udp) {
+        auto remote_datagram = std::static_pointer_cast<IDatagramStream>(*s);
+        auto client_datagram = req.client_datagram_stream;
+        if (!client_datagram) co_return absl::InvalidArgumentError("no client udp stream");
+        
+        auto read_client = [&]() -> awaitable<void> {
+            while (true) {
+                auto msg = co_await client_datagram->receiveFrom();
+                if (!msg.ok()) break;
+                auto st = co_await remote_datagram->sendTo(std::span<const u8>(reinterpret_cast<const u8*>(msg->first->data()), msg->first->size()), std::move(msg->second));
+                if (!st.ok()) break;
+            }
+            remote_datagram->close();
+        };
+
+        auto read_remote = [&]() -> awaitable<void> {
+            while (true) {
+                auto msg = co_await remote_datagram->receiveFrom();
+                if (!msg.ok()) break;
+                auto st = co_await client_datagram->sendTo(std::span<const u8>(reinterpret_cast<const u8*>(msg->first->data()), msg->first->size()), std::move(msg->second));
+                if (!st.ok()) break;
+            }
+            client_datagram->close();
+        };
+
+        using namespace boost::asio::experimental::awaitable_operators;
+        co_await (read_client() && read_remote());
+        co_return absl::OkStatus();
+    } else {
+        auto remote_stream = std::static_pointer_cast<ISessionStream>(*s);
+        co_await bidiCopy(req.client_stream, remote_stream);
+        co_return absl::OkStatus();
+    }
 }
 
 void ShineOutbound::stop() {

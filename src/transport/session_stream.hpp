@@ -29,4 +29,18 @@ public:
     virtual void close() = 0;
 };
 
+// Abstract bidirectional datagram stream for UDP over Shine.
+class IDatagramStream {
+public:
+    virtual ~IDatagramStream() = default;
+
+    // Send a datagram to a specific target.
+    virtual awaitable<Status> sendTo(std::span<const u8> data, class Address target) = 0;
+
+    // Receive a datagram. Returns the payload and the source address.
+    virtual awaitable<StatusOr<std::pair<std::shared_ptr<std::string>, class Address>>> receiveFrom() = 0;
+
+    virtual void close() = 0;
+};
+
 } // namespace shine

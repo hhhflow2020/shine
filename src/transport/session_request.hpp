@@ -13,10 +13,14 @@ namespace shine {
 // The actual bytestream is an ISessionStream (either a wrapped tcp::socket or
 // a shine Session).
 struct SessionRequest {
+    enum class Protocol { TCP, UDP };
+
     std::string                       inbound_tag;
     std::string                       inbound_protocol;
+    Protocol                          protocol = Protocol::TCP;
     Address                           target;
     std::shared_ptr<ISessionStream>   client_stream;
+    std::shared_ptr<IDatagramStream>  client_datagram_stream;
 };
 
 } // namespace shine

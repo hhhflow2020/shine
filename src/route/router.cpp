@@ -1,5 +1,7 @@
 #include "route/router.hpp"
 
+#include "route/geo_matcher.hpp"
+#include "core/logging.hpp"
 #include "transport/address.hpp"
 
 #include <absl/strings/match.h>
@@ -71,27 +73,39 @@ bool IpRange::contains(const u8* addr, bool v6) const noexcept {
     return bitsEqual(net.data(), addr, prefix_len);
 }
 
-bool CompiledRule::matches(const SessionRequest& r) const noexcept {
+bool CompiledRule::matches(const SessionRequest& r, const Router* router) const noexcept {
     if (inbound_tag && *inbound_tag != r.inbound_tag) return false;
     bool any_rule = false;
     bool any_match = false;
-    if (!domain_exact.empty() || !domain_suffix.empty()) {
+    if (!domain_exact.empty() || !domain_suffix.empty() || !geosite.empty()) {
         any_rule = true;
         if (r.target.isDomain()) {
             const auto& d = r.target.domain();
             if (domain_exact.contains(d)) any_match = true;
-            for (const auto& suf : domain_suffix) {
-                if (endsWithSuffix(d, suf)) { any_match = true; break; }
+            if (!any_match) {
+                for (const auto& suf : domain_suffix) {
+                    if (endsWithSuffix(d, suf)) { any_match = true; break; }
+                }
+            }
+            if (!any_match && router->geoSite()) {
+                for (const auto& gs : geosite) {
+                    if (router->geoSite()->match(d, gs)) { any_match = true; break; }
+                }
             }
         }
     }
-    if (!cidrs.empty()) {
+    if (!cidrs.empty() || !geoip.empty()) {
         any_rule = true;
         if (r.target.isIP()) {
             bool v6 = (r.target.type() == Address::Type::IPv6);
             const u8* p = r.target.bytes().data();
             for (const auto& cr : cidrs) {
                 if (cr.contains(p, v6)) { any_match = true; break; }
+            }
+            if (!any_match && router->geoIp()) {
+                for (const auto& gi : geoip) {
+                    if (router->geoIp()->match(p, v6, gi)) { any_match = true; break; }
+                }
             }
         }
     }
@@ -105,6 +119,18 @@ bool CompiledRule::matches(const SessionRequest& r) const noexcept {
 StatusOr<Router> Router::compile(const config::RouteConfig& cfg) {
     Router r;
     r.default_outbound_ = cfg.default_outbound;
+
+    if (!cfg.geosite_path.empty()) {
+        r.geosite_matcher_ = std::make_shared<GeoSiteMatcher>();
+        auto st = r.geosite_matcher_->load(cfg.geosite_path);
+        if (!st.ok()) SHINE_WARN("geosite load failed: {}", st.message());
+    }
+    if (!cfg.geoip_path.empty()) {
+        r.geoip_matcher_ = std::make_shared<GeoIpMatcher>();
+        auto st = r.geoip_matcher_->load(cfg.geoip_path);
+        if (!st.ok()) SHINE_WARN("geoip load failed: {}", st.message());
+    }
+
     r.rules_.reserve(cfg.rules.size());
     for (const auto& rc : cfg.rules) {
         CompiledRule cr;
@@ -112,6 +138,8 @@ StatusOr<Router> Router::compile(const config::RouteConfig& cfg) {
         cr.outbound_tag  = rc.outbound_tag;
         for (auto& d : rc.domain_exact) cr.domain_exact.insert(d);
         cr.domain_suffix = rc.domain_suffix;
+        cr.geoip         = rc.geoip;
+        cr.geosite       = rc.geosite;
         for (auto& c : rc.cidrs) {
             auto ip = parseCidr(c);
             if (!ip.ok()) return ip.status();
@@ -124,9 +152,12 @@ StatusOr<Router> Router::compile(const config::RouteConfig& cfg) {
 
 absl::string_view Router::pick(const SessionRequest& r) const noexcept {
     for (const auto& rule : rules_) {
-        if (rule.matches(r)) return rule.outbound_tag;
+        if (rule.matches(r, this)) return rule.outbound_tag;
     }
     return default_outbound_;
 }
+
+const GeoSiteMatcher* Router::geoSite() const noexcept { return geosite_matcher_.get(); }
+const GeoIpMatcher*   Router::geoIp() const noexcept { return geoip_matcher_.get(); }
 
 } // namespace shine

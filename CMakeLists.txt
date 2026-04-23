@@ -33,11 +33,14 @@ find_package(Boost REQUIRED COMPONENTS system)
 find_package(absl REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(prometheus-cpp REQUIRED)
+find_package(Protobuf REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(fmt REQUIRED)
 
 include_directories(${CMAKE_SOURCE_DIR}/src)
+include_directories(${CMAKE_BINARY_DIR}/src)
 include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_BINARY_DIR})
 
 # ---------- libraries ----------
 
@@ -75,10 +78,15 @@ add_library(shine_transport STATIC
 )
 target_link_libraries(shine_transport PUBLIC shine_proto)
 
+protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS src/proto/v2ray.proto)
+
 add_library(shine_route STATIC
     src/route/router.cpp
+    src/route/geo_matcher.cpp
+    ${PROTO_SRCS}
+    ${PROTO_HDRS}
 )
-target_link_libraries(shine_route PUBLIC shine_transport)
+target_link_libraries(shine_route PUBLIC shine_transport protobuf::libprotobuf)
 
 add_library(shine_config STATIC
     src/config/yaml_loader.cpp

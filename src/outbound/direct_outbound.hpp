@@ -15,6 +15,7 @@ public:
     const std::string& protocol() const override { return cfg_.protocol; }
 
 private:
+    awaitable<Status> handleUdp(SessionRequest req);
     asio::any_io_executor ex_;
     config::OutboundConfig cfg_;
 };

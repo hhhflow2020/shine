@@ -28,9 +28,11 @@ struct CompiledRule {
     absl::flat_hash_set<std::string>          domain_exact;
     std::vector<std::string>                  domain_suffix;
     std::vector<IpRange>                      cidrs;
+    std::vector<std::string>                  geoip;
+    std::vector<std::string>                  geosite;
     std::string                               outbound_tag;
 
-    bool matches(const SessionRequest& r) const noexcept;
+    bool matches(const SessionRequest& r, const class Router* router) const noexcept;
 };
 
 class Router {
@@ -41,9 +43,14 @@ public:
 
     const std::string& defaultOutbound() const noexcept { return default_outbound_; }
 
+    const class GeoSiteMatcher* geoSite() const noexcept;
+    const class GeoIpMatcher*   geoIp() const noexcept;
+
 private:
     std::vector<CompiledRule> rules_;
     std::string               default_outbound_;
+    std::shared_ptr<class GeoSiteMatcher> geosite_matcher_;
+    std::shared_ptr<class GeoIpMatcher>   geoip_matcher_;
 };
 
 } // namespace shine

@@ -142,6 +142,16 @@ StatusOr<ShineFrame> decodeShineFrame(const Resp2Frame& rf) {
         auto n = decodeSid(arr[1]); if (!n.ok()) return n.status();
         return ShineFrame{PongFrame{*n}};
     }
+    if (cmd == "NEW_UDP") {
+        if (auto s = need(2); !s.ok()) return s;
+        auto sid = decodeSid(arr[1]); if (!sid.ok()) return sid.status();
+        return ShineFrame{NewUdpFrame{*sid}};
+    }
+    if (cmd == "UDP_DATA") {
+        if (auto s = need(4); !s.ok()) return s;
+        auto sid = decodeSid(arr[1]); if (!sid.ok()) return sid.status();
+        return ShineFrame{UdpDataFrame{*sid, arr[2], arr[3]}};
+    }
     return absl::InvalidArgumentError(absl::StrCat("unknown cmd: ", cmd));
 }
 
@@ -208,6 +218,18 @@ void encodePing(std::string& out, const PingFrame& f) {
 void encodePong(std::string& out, const PongFrame& f) {
     std::string n; putU64BE(n, f.nonce);
     const absl::string_view parts[] = {"PONG", sv(n)};
+    Resp2Writer::writeArray(out, absl::MakeConstSpan(parts));
+}
+
+void encodeNewUdp(std::string& out, const NewUdpFrame& f) {
+    std::string sid; putU64BE(sid, f.sid);
+    const absl::string_view parts[] = {"NEW_UDP", sv(sid)};
+    Resp2Writer::writeArray(out, absl::MakeConstSpan(parts));
+}
+
+void encodeUdpData(std::string& out, const UdpDataFrame& f) {
+    std::string sid; putU64BE(sid, f.sid);
+    const absl::string_view parts[] = {"UDP_DATA", sv(sid), sv(f.addr_blob), sv(f.payload)};
     Resp2Writer::writeArray(out, absl::MakeConstSpan(parts));
 }
 

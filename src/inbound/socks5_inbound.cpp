@@ -5,6 +5,7 @@
 #include "transport/tcp_stream.hpp"
 
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/ip/udp.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
 
@@ -84,6 +85,84 @@ awaitable<Status> writeAll(tcp::socket& s, const u8* buf, std::size_t n) {
     co_return absl::OkStatus();
 }
 
+using boost::asio::ip::udp;
+
+class Socks5UdpStream : public IDatagramStream {
+public:
+    Socks5UdpStream(std::shared_ptr<tcp::socket> ts, udp::socket us)
+        : ts_(std::move(ts)), us_(std::move(us)) {}
+
+    awaitable<Status> sendTo(std::span<const u8> data, class Address target) override {
+        if (!us_.is_open()) co_return absl::UnavailableError("closed");
+        std::string buf;
+        buf.push_back(0); buf.push_back(0); buf.push_back(0);
+        buf.append(target.toBinary());
+        buf.append(reinterpret_cast<const char*>(data.data()), data.size());
+
+        boost::system::error_code ec;
+        co_await us_.async_send_to(asio::buffer(buf), client_ep_, asio::redirect_error(use_awaitable, ec));
+        if (ec) co_return absl::UnavailableError(ec.message());
+        co_return absl::OkStatus();
+    }
+
+    awaitable<StatusOr<std::pair<std::shared_ptr<std::string>, class Address>>> receiveFrom() override {
+        while (us_.is_open()) {
+            std::array<u8, 65536> buf;
+            udp::endpoint sender;
+            boost::system::error_code ec;
+            std::size_t n = co_await us_.async_receive_from(asio::buffer(buf), sender, asio::redirect_error(use_awaitable, ec));
+            if (ec) co_return absl::UnavailableError(ec.message());
+
+            if (client_ep_.port() == 0) {
+                client_ep_ = sender;
+            } else if (sender != client_ep_) {
+                continue; // Security: drop packets from unauthenticated sources to prevent hijacking/reflection
+            }
+
+            if (n < 4 || buf[0] != 0 || buf[1] != 0 || buf[2] != 0) continue;
+            
+            Address target;
+            std::size_t off = 3;
+            u8 atyp = buf[off++];
+            if (atyp == 1) { // IPv4
+                if (n < off + 4 + 2) continue;
+                std::array<u8, 4> ip; std::memcpy(ip.data(), &buf[off], 4); off += 4;
+                u16 port = (buf[off] << 8) | buf[off+1]; off += 2;
+                target = Address::fromIPv4(ip, port);
+            } else if (atyp == 3) { // Domain
+                if (n < off + 1) continue;
+                u8 dlen = buf[off++];
+                if (n < off + dlen + 2) continue;
+                std::string d(reinterpret_cast<char*>(&buf[off]), dlen); off += dlen;
+                u16 port = (buf[off] << 8) | buf[off+1]; off += 2;
+                target = Address::fromDomain(std::move(d), port);
+            } else if (atyp == 4) { // IPv6
+                if (n < off + 16 + 2) continue;
+                std::array<u8, 16> ip; std::memcpy(ip.data(), &buf[off], 16); off += 16;
+                u16 port = (buf[off] << 8) | buf[off+1]; off += 2;
+                target = Address::fromIPv6(ip, port);
+            } else { continue; }
+
+            auto payload = std::make_shared<std::string>(reinterpret_cast<char*>(&buf[off]), n - off);
+            
+            // Only set actual target on the very first packet if needed, but we return target with every packet
+            co_return std::make_pair(std::move(payload), std::move(target));
+        }
+        co_return absl::UnavailableError("closed");
+    }
+
+    void close() override {
+        boost::system::error_code ec;
+        us_.close(ec);
+        ts_->close(ec);
+    }
+
+private:
+    std::shared_ptr<tcp::socket> ts_;
+    udp::socket us_;
+    udp::endpoint client_ep_;
+};
+
 } // namespace
 
 awaitable<void> Socks5Inbound::handleClient(tcp::socket sock) {
@@ -127,7 +206,8 @@ awaitable<void> Socks5Inbound::handleClient(tcp::socket sock) {
     // --- request ---
     u8 req_hdr[4];
     if (!(co_await readExact(sock, req_hdr, 4)).ok()) co_return;
-    if (req_hdr[0] != 0x05 || req_hdr[1] != 0x01) {  // only CONNECT
+    u8 cmd = req_hdr[1];
+    if (req_hdr[0] != 0x05 || (cmd != 0x01 && cmd != 0x03)) {  // CONNECT or UDP ASSOCIATE
         u8 rep[10] = {0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
         (void)co_await writeAll(sock, rep, 10);
         co_return;
@@ -162,16 +242,91 @@ awaitable<void> Socks5Inbound::handleClient(tcp::socket sock) {
             co_return;
     }
 
-    // Reply "succeeded" with local-bound dummy (0.0.0.0:0) — most clients accept it.
-    u8 rep[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
-    if (!(co_await writeAll(sock, rep, 10)).ok()) co_return;
+    if (cmd == 0x03) {
+        // UDP ASSOCIATE
+        boost::system::error_code ec;
+        udp::socket us(ex_, udp::v4());
+        us.bind(udp::endpoint(udp::v4(), 0), ec);
+        if (ec) {
+            u8 rep[10] = {0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+            (void)co_await writeAll(sock, rep, 10);
+            co_return;
+        }
+        auto lep = us.local_endpoint(ec);
+        std::vector<u8> rep;
+        rep.push_back(0x05); rep.push_back(0x00); rep.push_back(0x00); rep.push_back(0x01);
+        auto bytes = lep.address().to_v4().to_bytes();
+        rep.insert(rep.end(), bytes.begin(), bytes.end());
+        rep.push_back((lep.port() >> 8) & 0xFF);
+        rep.push_back(lep.port() & 0xFF);
+        if (!(co_await writeAll(sock, rep.data(), rep.size())).ok()) co_return;
 
-    SessionRequest r;
-    r.inbound_tag      = cfg_.tag;
-    r.inbound_protocol = cfg_.protocol;
-    r.target           = std::move(target);
-    r.client_stream    = std::make_shared<TcpSocketStream>(std::move(sock));
-    if (on_req_) co_await on_req_(std::move(r));
+        auto ts = std::make_shared<tcp::socket>(std::move(sock));
+        auto udp_stream = std::make_shared<Socks5UdpStream>(ts, std::move(us));
+
+        // Wait for first UDP packet to determine routing target
+        auto first = co_await udp_stream->receiveFrom();
+        if (!first.ok()) co_return;
+
+        // Monitor TCP connection to terminate UDP association
+        asio::co_spawn(ex_, [ts, udp_stream]() -> awaitable<void> {
+            char b; boost::system::error_code e;
+            co_await asio::async_read(*ts, asio::buffer(&b, 1), asio::redirect_error(use_awaitable, e));
+            udp_stream->close();
+        }, asio::detached);
+
+        SessionRequest r;
+        r.inbound_tag            = cfg_.tag;
+        r.inbound_protocol       = cfg_.protocol;
+        r.protocol               = SessionRequest::Protocol::UDP;
+        r.target                 = first->second; // Route based on first packet destination
+        r.client_datagram_stream = udp_stream;
+        if (on_req_) {
+            // Forward the first packet because receiveFrom() consumed it
+            auto forwarder = [udp_stream, payload = first->first, target = first->second](SessionRequest req, SessionRequestHandler handler) -> awaitable<void> {
+                // Wrapper to inject first packet before returning to receive loop
+                class InjectedStream : public IDatagramStream {
+                public:
+                    InjectedStream(std::shared_ptr<IDatagramStream> inner, std::shared_ptr<std::string> p, Address t)
+                        : inner_(inner), p_(p), t_(t) {}
+                    awaitable<Status> sendTo(std::span<const u8> data, class Address target) override { return inner_->sendTo(data, target); }
+                    awaitable<StatusOr<std::pair<std::shared_ptr<std::string>, class Address>>> receiveFrom() override {
+                        if (p_) {
+                            auto ret = std::make_pair(std::move(p_), std::move(t_));
+                            p_.reset();
+                            co_return ret;
+                        }
+                        co_return co_await inner_->receiveFrom();
+                    }
+                    void close() override { inner_->close(); }
+                private:
+                    std::shared_ptr<IDatagramStream> inner_;
+                    std::shared_ptr<std::string> p_;
+                    Address t_;
+                };
+                req.client_datagram_stream = std::make_shared<InjectedStream>(udp_stream, payload, target);
+                co_await handler(std::move(req));
+            };
+            co_await forwarder(std::move(r), on_req_);
+        }
+        
+        // Ensure the control socket is closed when the session terminates
+        // This will trigger the monitor coroutine to abort and clean up.
+        boost::system::error_code ignore_ec;
+        ts->close(ignore_ec);
+    } else {
+        // Reply "succeeded" with local-bound dummy (0.0.0.0:0)
+        u8 rep[10] = {0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+        if (!(co_await writeAll(sock, rep, 10)).ok()) co_return;
+
+        SessionRequest r;
+        r.inbound_tag      = cfg_.tag;
+        r.inbound_protocol = cfg_.protocol;
+        r.protocol         = SessionRequest::Protocol::TCP;
+        r.target           = std::move(target);
+        r.client_stream    = std::make_shared<TcpSocketStream>(std::move(sock));
+        if (on_req_) co_await on_req_(std::move(r));
+    }
 }
 
 } // namespace shine

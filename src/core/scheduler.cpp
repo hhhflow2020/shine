@@ -5,7 +5,7 @@ namespace shine {
 
 Scheduler::Scheduler(std::size_t io_threads)
     : io_(), guard_(asio::make_work_guard(io_)),
-      n_threads_(io_threads == 0 ? std::max<std::size_t>(1, std::thread::hardware_concurrency()) : io_threads) {}
+      n_threads_(io_threads == 0 ? std::clamp<std::size_t>(std::thread::hardware_concurrency() / 2, 2, 8) : io_threads) {}
 
 Scheduler::~Scheduler() {
     stop();

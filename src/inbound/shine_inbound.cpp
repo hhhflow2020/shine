@@ -73,8 +73,37 @@ awaitable<void> ShineInbound::acceptLoop() {
             SessionRequest req;
             req.inbound_tag      = inbound_tag;
             req.inbound_protocol = inbound_proto;
+            req.protocol         = s->protocol();
             req.target           = std::move(t);
-            req.client_stream    = std::static_pointer_cast<ISessionStream>(s);
+            if (req.protocol == SessionRequest::Protocol::UDP) {
+                auto ds = std::static_pointer_cast<IDatagramStream>(s);
+                auto first = co_await ds->receiveFrom();
+                if (!first.ok()) co_return;
+                req.target = first->second;
+                
+                class InjectedStream : public IDatagramStream {
+                public:
+                    InjectedStream(std::shared_ptr<IDatagramStream> inner, std::shared_ptr<std::string> p, Address t)
+                        : inner_(std::move(inner)), p_(std::move(p)), t_(std::move(t)) {}
+                    awaitable<Status> sendTo(std::span<const u8> data, class Address target) override { return inner_->sendTo(data, target); }
+                    awaitable<StatusOr<std::pair<std::shared_ptr<std::string>, class Address>>> receiveFrom() override {
+                        if (p_) {
+                            auto ret = std::make_pair(std::move(p_), std::move(t_));
+                            p_.reset();
+                            co_return ret;
+                        }
+                        co_return co_await inner_->receiveFrom();
+                    }
+                    void close() override { inner_->close(); }
+                private:
+                    std::shared_ptr<IDatagramStream> inner_;
+                    std::shared_ptr<std::string> p_;
+                    Address t_;
+                };
+                req.client_datagram_stream = std::make_shared<InjectedStream>(ds, first->first, first->second);
+            } else {
+                req.client_stream    = std::static_pointer_cast<ISessionStream>(s);
+            }
             if (on_req) co_await on_req(std::move(req));
             co_return;
         });

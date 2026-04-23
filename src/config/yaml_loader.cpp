@@ -3,6 +3,7 @@
 #include <absl/container/flat_hash_set.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
+#include <absl/strings/match.h>
 
 #include <yaml-cpp/yaml.h>
 
@@ -164,13 +165,40 @@ static RuleConfig parseRule(const YAML::Node& n) {
     RuleConfig r;
     if (n["inbound"]) r.inbound_tag = n["inbound"].as<std::string>();
     if (n["domain"])  {
-        for (auto x : n["domain"]) r.domain_exact.push_back(x.as<std::string>());
+        for (auto x : n["domain"]) {
+            std::string d = x.as<std::string>();
+            if (absl::StartsWith(d, "geosite:")) {
+                r.geosite.push_back(d.substr(8));
+            } else if (absl::StartsWith(d, "domain:")) {
+                r.domain_suffix.push_back(d.substr(7));
+            } else if (absl::StartsWith(d, "full:")) {
+                r.domain_exact.push_back(d.substr(5));
+            } else {
+                r.domain_exact.push_back(d);
+            }
+        }
     }
     if (n["domain_suffix"]) {
         for (auto x : n["domain_suffix"]) r.domain_suffix.push_back(x.as<std::string>());
     }
+    if (n["ip"]) {
+        for (auto x : n["ip"]) {
+            std::string ip = x.as<std::string>();
+            if (absl::StartsWith(ip, "geoip:")) {
+                r.geoip.push_back(ip.substr(6));
+            } else {
+                r.cidrs.push_back(ip);
+            }
+        }
+    }
     if (n["cidr"]) {
         for (auto x : n["cidr"]) r.cidrs.push_back(x.as<std::string>());
+    }
+    if (n["geoip"]) {
+        for (auto x : n["geoip"]) r.geoip.push_back(x.as<std::string>());
+    }
+    if (n["geosite"]) {
+        for (auto x : n["geosite"]) r.geosite.push_back(x.as<std::string>());
     }
     r.outbound_tag = getStr(n, "outbound");
     return r;
@@ -209,6 +237,8 @@ StatusOr<Config> loadFromString(const std::string& content) {
             }
         }
         if (auto r = root["route"]) {
+            c.route.geoip_path = getStr(r, "geoip_path");
+            c.route.geosite_path = getStr(r, "geosite_path");
             if (auto rr = r["rules"]) {
                 for (auto n : rr) c.route.rules.push_back(parseRule(n));
             }

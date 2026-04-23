@@ -13,14 +13,19 @@
 namespace shine {
 
 Session::Session(std::shared_ptr<Link> link, u64 sid, Address target,
-                 u32 peer_initial_window, u32 our_initial_window)
+                 u32 peer_initial_window, u32 our_initial_window,
+                 SessionRequest::Protocol protocol)
     : link_(link), sid_(sid), target_(std::move(target)),
-      our_initial_window_(our_initial_window) {
+      our_initial_window_(our_initial_window), protocol_(protocol) {
     send_credit_.store(static_cast<i64>(peer_initial_window), std::memory_order_relaxed);
 
     auto ex = link->executor();
-    inbox_         = std::make_unique<PayloadChan>(ex, 1024);
-    credit_signal_ = std::make_unique<CreditChan>(ex, 1);
+    if (protocol == SessionRequest::Protocol::TCP) {
+        inbox_         = std::make_unique<PayloadChan>(ex, 1024);
+        credit_signal_ = std::make_unique<CreditChan>(ex, 1);
+    } else {
+        udp_inbox_ = std::make_unique<UdpPayloadChan>(ex, 1024);
+    }
     state_.store(State::Open, std::memory_order_relaxed);
 }
 
@@ -112,17 +117,64 @@ awaitable<void> Session::shutdownWrite() {
 }
 
 void Session::close() {
-    state_.store(State::Closed, std::memory_order_release);
+    auto expected = state_.load(std::memory_order_acquire);
+    if (expected != State::Closed) {
+        state_.store(State::Closed, std::memory_order_release);
+        if (auto lk = link_.lock()) {
+            if (!lk->isClosed()) {
+                std::string wire;
+                proto::encodeClose(wire, proto::CloseFrame{sid_, ""});
+                asio::co_spawn(lk->executor(), lk->enqueueFrame(std::move(wire)), asio::detached);
+            }
+            lk->eraseSession(sid_);
+        }
+    }
     if (inbox_) inbox_->close();
+    if (udp_inbox_) udp_inbox_->close();
     if (credit_signal_) credit_signal_->close();
-    if (auto lk = link_.lock()) lk->eraseSession(sid_);
+}
+
+awaitable<Status> Session::sendTo(std::span<const u8> data, class Address target) {
+    auto link = link_.lock();
+    if (!link || link->isClosed()) co_return absl::UnavailableError("link closed");
+    auto st = state_.load(std::memory_order_acquire);
+    if (st == State::Closed || st == State::HalfClosedLocal) {
+        co_return absl::FailedPreconditionError("session write side closed");
+    }
+
+    std::string wire;
+    // UDP_DATA overhead: array format, roughly 1+8+N bytes depending on target length
+    proto::encodeUdpData(wire, proto::UdpDataFrame{sid_, target.toBinary(), std::string(reinterpret_cast<const char*>(data.data()), data.size())});
+    co_await link->enqueueFrame(std::move(wire));
+    bytes_out_.fetch_add(data.size(), std::memory_order_relaxed);
+    co_return absl::OkStatus();
+}
+
+awaitable<StatusOr<std::pair<std::shared_ptr<std::string>, class Address>>> Session::receiveFrom() {
+    auto st = state_.load(std::memory_order_acquire);
+    if (st == State::Closed || st == State::HalfClosedRemote) {
+        co_return absl::UnavailableError("session closed");
+    }
+    boost::system::error_code ec;
+    auto pay = co_await udp_inbox_->async_receive(asio::redirect_error(use_awaitable, ec));
+    if (ec) co_return absl::UnavailableError("session closed");
+    bytes_in_.fetch_add(pay.first->size(), std::memory_order_relaxed);
+    co_return pay;
 }
 
 awaitable<void> Session::onData(std::shared_ptr<std::string> payload) {
-    if (!payload || payload->empty()) co_return;
+    if (!payload || payload->empty() || !inbox_) co_return;
     boost::system::error_code ec;
     co_await inbox_->async_send(boost::system::error_code{}, std::move(payload),
                                 asio::redirect_error(use_awaitable, ec));
+}
+
+awaitable<void> Session::onUdpData(std::shared_ptr<std::string> payload, class Address addr) {
+    if (!payload || !udp_inbox_) co_return;
+    // Use try_send to naturally drop UDP packets if the queue is full.
+    // This prevents a single congested UDP session from blocking the multiplexer's read loop.
+    udp_inbox_->try_send(boost::system::error_code{}, std::make_pair(std::move(payload), std::move(addr)));
+    co_return;
 }
 
 void Session::onWindow(u32 delta) {
@@ -138,11 +190,13 @@ void Session::onPeerClose() {
         state_.store(State::HalfClosedRemote, std::memory_order_release);
     }
     if (inbox_) inbox_->close();
+    if (udp_inbox_) udp_inbox_->close();
 }
 
 void Session::onReset() {
     state_.store(State::Closed, std::memory_order_release);
     if (inbox_) inbox_->close();
+    if (udp_inbox_) udp_inbox_->close();
     if (credit_signal_) credit_signal_->close();
 }
 

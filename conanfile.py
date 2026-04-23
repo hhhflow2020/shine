@@ -25,6 +25,7 @@ class ShineProxyConan(ConanFile):
         self.requires("abseil/20240116.2")
         self.requires("yaml-cpp/0.8.0")
         self.requires("prometheus-cpp/1.2.4")
+        self.requires("protobuf/3.21.12")
         self.requires("spdlog/1.15.1")
         self.requires("fmt/11.1.4", override=True)
 

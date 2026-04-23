@@ -40,12 +40,19 @@ outbounds:
   #   init_window: 256KB
 
 route:
+  geoip_path: "/app/geoip.dat"
+  geosite_path: "/app/geosite.dat"
   rules:
     - inbound: shine-in
       outbound: direct
-    - domain_suffix: [".ads.example", "tracking.example"]
+    - domain: 
+        - "geosite:category-ads-all"
       outbound: deny
-    - domain_suffix: [".cn", ".local"]
+    - domain:
+        - "geosite:cn"
+        - "domain:bilibili.com"
+      ip:
+        - "geoip:cn"
       outbound: direct
     - cidr: [127.0.0.0/8, ::1/128, 10.0.0.0/8, 192.168.0.0/16]
       outbound: block
